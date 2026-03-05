@@ -1,0 +1,5 @@
+{
+  "name": "SquareCrop - 批量圖片正方形截取器",
+  "description": "上傳圖片並框選多個區域，自動轉換為 256x256 格式並打包下載。",
+  "requestFramePermissions": []
+}
