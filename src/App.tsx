@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload, Download, Trash2, X, Scissors, Image as ImageIcon, Check, MousePointer2 } from 'lucide-react';
+import { Upload, Download, Trash2, X, Scissors, Image as ImageIcon, Check, MousePointer2, Sparkles, Loader2 } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { GoogleGenAI } from "@google/genai";
 
 /**
  * Utility for tailwind class merging
@@ -34,6 +35,7 @@ export default function App() {
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [crops, setCrops] = useState<{ id: string; dataUrl: string }[]>([]);
+  const [isDetecting, setIsDetecting] = useState(false);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -407,6 +409,96 @@ export default function App() {
     saveAs(content, `${imageName}_crops.zip`);
   };
 
+  const handleAutoDetect = async () => {
+    if (!image || !canvasRef.current) return;
+    setIsDetecting(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const model = "gemini-3-flash-preview";
+
+      // Convert image to base64
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = image.naturalWidth;
+      tempCanvas.height = image.naturalHeight;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (!tempCtx) return;
+      tempCtx.drawImage(image, 0, 0);
+      const base64Image = tempCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+      const prompt = "Detect the main subjects (people, animals, objects) in this image. Return their bounding boxes as a JSON array of objects with 'box_2d' property (format: [ymin, xmin, ymax, xmax], normalized 0-1000). Only return the JSON array, no other text.";
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const result = JSON.parse(response.text);
+      
+      if (Array.isArray(result)) {
+        const canvas = canvasRef.current;
+        const newSelections: Selection[] = [];
+
+        result.forEach((item: any) => {
+          if (item.box_2d && Array.isArray(item.box_2d)) {
+            const [ymin, xmin, ymax, xmax] = item.box_2d;
+            
+            // Convert normalized to canvas coordinates
+            const left = (xmin / 1000) * canvas.width;
+            const top = (ymin / 1000) * canvas.height;
+            const width = ((xmax - xmin) / 1000) * canvas.width;
+            const height = ((ymax - ymin) / 1000) * canvas.height;
+
+            // Create a square selection centered on the detected box
+            const centerX = left + width / 2;
+            const centerY = top + height / 2;
+            // Increase size by 20% to avoid cutting edges
+            let size = Math.max(width, height) * 1.2;
+
+            // Constrain size to image bounds
+            size = Math.min(size, canvas.width, canvas.height);
+
+            let selX = centerX - size / 2;
+            let selY = centerY - size / 2;
+
+            // Adjust if out of bounds
+            if (selX < 0) selX = 0;
+            if (selY < 0) selY = 0;
+            if (selX + size > canvas.width) selX = canvas.width - size;
+            if (selY + size > canvas.height) selY = canvas.height - size;
+
+            const newSel = {
+              id: Math.random().toString(36).substr(2, 9),
+              x: selX,
+              y: selY,
+              size: size
+            };
+            newSelections.push(newSel);
+          }
+        });
+
+        if (newSelections.length > 0) {
+          setSelections(prev => [...prev, ...newSelections]);
+          newSelections.forEach(sel => generateCrop(sel));
+        }
+      }
+    } catch (error) {
+      console.error("Auto detection failed:", error);
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-[#1a1a1a] font-sans selection:bg-emerald-100">
       {/* Header */}
@@ -496,6 +588,23 @@ export default function App() {
                       調整模式
                     </button>
                   </div>
+
+                  {/* Auto Detect Button */}
+                  <button
+                    onClick={handleAutoDetect}
+                    disabled={isDetecting}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm",
+                      "bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    )}
+                  >
+                    {isDetecting ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
+                    自動偵測
+                  </button>
                 </div>
                 <button 
                   onClick={() => setImage(null)}
